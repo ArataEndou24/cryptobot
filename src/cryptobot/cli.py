@@ -23,10 +23,12 @@ data_app = typer.Typer(help="研究用データの取得と確認", no_args_is_h
 universe_app = typer.Typer(help="対象銘柄（ユニバース）の確認", no_args_is_help=True)
 backtest_app = typer.Typer(help="過去データでの検証（バックテスト）", no_args_is_help=True)
 exchange_app = typer.Typer(help="取引所（Hyperliquid）の情報", no_args_is_help=True)
+live_app = typer.Typer(help="運用（テストネット / 本番）", no_args_is_help=True)
 app.add_typer(data_app, name="data")
 app.add_typer(universe_app, name="universe")
 app.add_typer(backtest_app, name="backtest")
 app.add_typer(exchange_app, name="exchange")
+app.add_typer(live_app, name="live")
 
 ConfigOpt = Annotated[
     Path | None, typer.Option("--config", "-c", help="設定ファイルの場所（通常は省略）")
@@ -453,6 +455,55 @@ def backtest_compare(
     typer.echo("")
     typer.echo("読み方: 年率・回転率・値動き・ファンディング・コストは全て年率換算。")
     typer.echo("  基準との差が、その要素を変えた効果です。")
+
+
+@live_app.command("plan")
+def live_plan(
+    config: ConfigOpt = None,
+    equity: Annotated[
+        float | None,
+        typer.Option(
+            "--equity", help="想定する口座残高（USD）。省略時は口座から取得、なければ設定の初期資金"
+        ),
+    ] = None,
+) -> None:
+    """今この時点でボットが持ちたいポジションを表示する（注文は出さない乾式運転）。"""
+    from cryptobot.env import load_env, secret
+    from cryptobot.exchange.hyperliquid_info import HyperliquidInfo, account_equity
+    from cryptobot.live.planner import build_plan
+
+    s = _settings(config)
+    store = _store(s)
+    load_env()
+    address = secret("HL_MAIN_ADDRESS")
+    # 価格データは常に本番（mainnet）から取る。テストネットの価格と銘柄一覧は本番と異なるため。
+    # 口座残高だけは設定のネットワーク（testnet / mainnet）から取る。
+    if equity is None and address:
+        with HyperliquidInfo(s.exchange.network) as acct:
+            equity = account_equity(acct.user_state(address))
+        typer.echo(f"口座残高（{s.exchange.network}）: {equity:,.2f} USD")
+    if equity is None or equity <= 0:
+        equity = s.backtest.initial_equity
+        typer.echo(f"口座残高が取れないため、設定の初期資金 {equity:,.0f} USD 相当で計算します")
+    typer.echo("Hyperliquid（本番）から 1 時間足を取得中...")
+    with HyperliquidInfo("mainnet") as info:
+        plan = build_plan(s, store, info, equity)
+    n_uni = len(plan.universe)
+    typer.echo(f"\n{plan.as_of:%Y-%m-%d %H:%M} UTC 時点の目標ポジション（ユニバース {n_uni} 銘柄）")
+    typer.echo(
+        "  銘柄        方向   ウェイト   金額(USD)     数量          現在値      得点   FR(8h)"
+    )
+    for p in plan.positions:
+        side = "ロング" if p.weight > 0 else "ショート"
+        typer.echo(
+            f"  {p.coin:<10} {side:<5} {p.weight * 100:+6.1f}%  {p.notional_usd:+10.2f}  "
+            f"{p.size:+12.4f}  {p.mark_px:>12.4f}  {p.score:+6.2f}  {p.funding_8h * 100:+.4f}%"
+        )
+    lev = plan.gross_notional / plan.equity
+    typer.echo(f"\n総建玉: {plan.gross_notional:,.2f} USD（資産の {lev:.2f} 倍）")
+    if plan.skipped:
+        typer.echo("対象外: " + ", ".join(plan.skipped))
+    typer.echo("\nこれは表示だけで、注文は出していません。")
 
 
 def _latest_or_exit(store: DataStore) -> datetime:

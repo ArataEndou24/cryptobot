@@ -44,4 +44,7 @@ compare: ## 戦略の構成要素ごとの比較（どこに優位性がある�
 exchange-symbols: ## 取引所（Hyperliquid）の上場銘柄一覧を取得して保存
 	uv run cryptobot exchange symbols
 
-.PHONY: help setup doctor check fmt data data-status universe backtest walkforward compare exchange-symbols
+plan: ## 今この時点の目標ポジションを表示（注文は出さない）
+	uv run cryptobot live plan
+
+.PHONY: help setup doctor check fmt data data-status universe backtest walkforward compare exchange-symbols plan

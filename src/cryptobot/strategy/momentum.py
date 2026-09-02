@@ -119,8 +119,12 @@ def target_weights(panel: Panel, cfg: StrategyConfig, risk: RiskConfig) -> np.nd
     hourly_target = risk.target_annual_vol / np.sqrt(HOURS_PER_YEAR)
     prev = np.zeros(N)
     lev = 0.0
+    # リバランスは UTC の時計に揃える（00:00, 04:00, ...）。検証と運用で同じ時刻に動くため。
+    epoch_hours = panel.times.astype("datetime64[h]").astype(np.int64)
+    is_rebalance = (epoch_hours % cfg.rebalance_hours) == 0
+    is_lev_update = (epoch_hours % cfg.leverage_update_hours) == 0
     for t in range(T):
-        if t % cfg.rebalance_hours != 0:
+        if not is_rebalance[t]:
             W[t] = prev
             continue
         ok = panel.member[t] & ~np.isnan(score[t]) & ~np.isnan(vol[t]) & (vol[t] > 0)
@@ -139,7 +143,7 @@ def target_weights(panel: Panel, cfg: StrategyConfig, risk: RiskConfig) -> np.nd
             raw[shorts] = -0.5 * inv / inv.sum()
         if longs.size == 0 or shorts.size == 0:
             raw *= 2.0  # 片側だけなら総建玉 1 に揃える
-        if lev == 0.0 or t % cfg.leverage_update_hours == 0:
+        if lev == 0.0 or is_lev_update[t]:
             lev = _vol_target_leverage(r1, t, raw, cfg.vol_lookback_hours, hourly_target)
         w = raw * lev
         w = np.clip(w, -risk.max_position_pct, risk.max_position_pct)
