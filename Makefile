@@ -47,4 +47,22 @@ exchange-symbols: ## 取引所（Hyperliquid）の上場銘柄一覧を取得し
 plan: ## 今この時点の目標ポジションを表示（注文は出さない）
 	uv run cryptobot live plan
 
-.PHONY: help setup doctor check fmt data data-status universe backtest walkforward compare exchange-symbols plan
+live-once: ## 1 回のリバランスを表示だけで実行（注文は送らない）
+	uv run cryptobot live once
+
+live-once-execute: ## 1 回のリバランスを実行し、実際に注文を送る
+	uv run cryptobot live once --execute
+
+live: ## リバランス時刻ごとに注文を送り続ける（Ctrl+C で停止）
+	uv run cryptobot live loop --execute
+
+status: ## 口座、ポジション、運用状態を表示
+	uv run cryptobot live status
+
+flatten: ## 緊急停止: 全ポジションを閉じて新規注文を止める
+	uv run cryptobot live flatten
+
+resume: ## 停止フラグを解除して再開できるようにする
+	uv run cryptobot live resume
+
+.PHONY: help setup doctor check fmt data data-status universe backtest walkforward compare exchange-symbols plan live-once live-once-execute live status flatten resume

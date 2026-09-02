@@ -11,6 +11,7 @@ dependencies = [
     "pydantic>=2.7",
     "pyyaml>=6.0",
     "typer>=0.12",
+    "hyperliquid-python-sdk>=0.24.0",
 ]
 
 [project.scripts]
@@ -50,7 +51,7 @@ warn_unreachable = true
 files = ["src"]
 
 [[tool.mypy.overrides]]
-module = ["pyarrow.*"]
+module = ["pyarrow.*", "hyperliquid.*", "eth_account.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

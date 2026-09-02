@@ -506,6 +506,158 @@ def live_plan(
     typer.echo("\nこれは表示だけで、注文は出していません。")
 
 
+def _trader(s: Settings) -> object:
+    """鍵を読んで取引所に接続する。鍵がなければ運用者向けの案内を出して終了。"""
+    from cryptobot.env import load_env, secret
+    from cryptobot.exchange.hyperliquid_trader import HyperliquidTrader
+
+    load_env()
+    key = secret("HL_API_WALLET_PRIVATE_KEY")
+    address = secret("HL_MAIN_ADDRESS")
+    if not key or not address:
+        typer.echo(
+            ".env に HL_API_WALLET_PRIVATE_KEY と HL_MAIN_ADDRESS が必要です。"
+            " .env.example を参考に作成してください（手順書 02）。",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    return HyperliquidTrader(s.exchange.network, key, address)
+
+
+def _guard_execute(s: Settings, execute: bool) -> None:
+    if execute and s.exchange.network == "mainnet" and not s.live.armed:
+        typer.echo(
+            "本番（mainnet）への注文は、設定 live.armed を true にしない限り出せません。"
+            " 手順書 03 の条件を満たしてから有効にしてください。",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+
+@live_app.command("once")
+def live_once(
+    config: ConfigOpt = None,
+    execute: Annotated[
+        bool, typer.Option("--execute", help="実際に注文を送る（省略時は表示のみ）")
+    ] = False,
+) -> None:
+    """1 回のリバランス周期を実行する。--execute がなければ注文は送らず表示だけ。"""
+    from cryptobot.exchange.hyperliquid_info import HyperliquidInfo
+    from cryptobot.live.runner import run_cycle
+
+    s = _settings(config)
+    store = _store(s)
+    _guard_execute(s, execute)
+    trader = _trader(s)
+    typer.echo(f"接続先: {s.exchange.network}、モード: {'注文送信' if execute else '表示のみ'}")
+    with HyperliquidInfo("mainnet") as info:
+        report = run_cycle(s, store, trader, info, execute)  # type: ignore[arg-type]
+    typer.echo(report.summary())
+
+
+@live_app.command("loop")
+def live_loop(
+    config: ConfigOpt = None,
+    execute: Annotated[bool, typer.Option("--execute", help="実際に注文を送る")] = False,
+) -> None:
+    """リバランス時刻（UTC 00:00, 04:00, …の数分後）ごとに周期を実行し続ける。Ctrl+C で停止。"""
+    import time
+
+    from cryptobot.exchange.hyperliquid_info import HyperliquidInfo
+    from cryptobot.live.runner import run_cycle
+    from cryptobot.live.schedule import next_run_time
+
+    s = _settings(config)
+    store = _store(s)
+    _guard_execute(s, execute)
+    trader = _trader(s)
+    mode = "注文送信" if execute else "表示のみ"
+    typer.echo(f"接続先: {s.exchange.network}、モード: {mode}。Ctrl+C で停止。")
+    while True:
+        nxt = next_run_time(
+            datetime.now(UTC), s.strategy.rebalance_hours, s.live.rebalance_delay_minutes
+        )
+        wait = (nxt - datetime.now(UTC)).total_seconds()
+        typer.echo(f"次の実行: {nxt:%Y-%m-%d %H:%M} UTC（{wait / 60:.0f} 分後）")
+        time.sleep(max(0.0, wait))
+        with HyperliquidInfo("mainnet") as info:
+            report = run_cycle(s, store, trader, info, execute)  # type: ignore[arg-type]
+        typer.echo(report.summary())
+
+
+@live_app.command("flatten")
+def live_flatten(
+    config: ConfigOpt = None,
+    yes: Annotated[bool, typer.Option("--yes", help="確認なしで実行")] = False,
+) -> None:
+    """緊急停止: 全ポジションを閉じ、以後の新規注文を止める。"""
+    from cryptobot.exchange.hyperliquid_trader import HyperliquidTrader
+    from cryptobot.live.executor import execute, flatten_orders
+    from cryptobot.live.state import LiveState
+
+    s = _settings(config)
+    if not yes and not typer.confirm(
+        f"{s.exchange.network} の全ポジションを閉じて停止します。よろしいですか?"
+    ):
+        raise typer.Exit(code=1)
+    trader = _trader(s)
+    assert isinstance(trader, HyperliquidTrader)
+    trader.cancel_all()
+    orders = flatten_orders(trader.positions(), trader.mids(), trader.markets(), s.live)
+    results = execute(trader, orders)
+    for r in results:
+        typer.echo(f"  [{'OK' if r.ok else 'NG'}] {r.request.coin}: {r.message}")
+    path = s.live.state_dir / "state.json"
+    st = LiveState.load(path)
+    st.halted = True
+    st.halt_reason = "運用者による緊急停止"
+    st.save(path)
+    typer.echo("停止しました。再開するには `cryptobot live resume`。")
+
+
+@live_app.command("resume")
+def live_resume(config: ConfigOpt = None) -> None:
+    """停止フラグを解除する（原因を確認してから）。"""
+    from cryptobot.live.state import LiveState
+
+    s = _settings(config)
+    path = s.live.state_dir / "state.json"
+    st = LiveState.load(path)
+    typer.echo(f"停止理由: {st.halt_reason or 'なし'}")
+    st.halted = False
+    st.halt_reason = ""
+    st.consecutive_errors = 0
+    st.save(path)
+    typer.echo("再開可能にしました。")
+
+
+@live_app.command("status")
+def live_status(config: ConfigOpt = None) -> None:
+    """口座、ポジション、運用状態を表示する。"""
+    from cryptobot.exchange.hyperliquid_trader import HyperliquidTrader
+    from cryptobot.live.state import LiveState
+
+    s = _settings(config)
+    trader = _trader(s)
+    assert isinstance(trader, HyperliquidTrader)
+    equity = trader.equity()
+    pos = trader.positions()
+    mids = trader.mids()
+    st = LiveState.load(s.live.state_dir / "state.json")
+    typer.echo(f"接続先: {s.exchange.network}、資産: {equity:,.2f} USD")
+    if st.peak_equity > 0:
+        dd = 1.0 - equity / st.peak_equity
+        typer.echo(f"最高値 {st.peak_equity:,.2f} USD からのドローダウン: {dd:.1%}")
+    typer.echo(f"停止フラグ: {'あり（' + st.halt_reason + '）' if st.halted else 'なし'}")
+    typer.echo(f"最終実行: {st.last_run_at or 'なし'}")
+    if not pos:
+        typer.echo("ポジション: なし")
+    else:
+        typer.echo("ポジション:")
+        for coin, sz in sorted(pos.items(), key=lambda kv: -abs(kv[1] * mids.get(kv[0], 0))):
+            typer.echo(f"  {coin:<8} {sz:+g}（約 {sz * mids.get(coin, 0):+,.0f} USD）")
+
+
 def _latest_or_exit(store: DataStore) -> datetime:
     from cryptobot.data.universe import latest_bar_time
 

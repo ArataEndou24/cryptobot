@@ -125,7 +125,17 @@ class BacktestConfig(_Strict):
     end: str | None = None
     fee_bps: float = Field(default=4.5, ge=0.0, le=100.0)
     slippage_bps: float = Field(default=5.0, ge=0.0, le=100.0)
-    initial_equity: float = Field(default=200_000.0, gt=0.0)
+    initial_equity: float = Field(default=1_300.0, gt=0.0)
+
+
+class LiveConfig(_Strict):
+    """運用の設定。armed が true でない限り本番（mainnet）には注文を出さない。"""
+
+    armed: bool = False
+    min_order_usd: float = Field(default=10.0, ge=1.0)
+    max_slippage_pct: float = Field(default=0.003, ge=0.0, le=0.02)
+    state_dir: Path = Path("data/live")
+    rebalance_delay_minutes: int = Field(default=3, ge=0, le=59)
 
 
 class Settings(_Strict):
@@ -136,6 +146,7 @@ class Settings(_Strict):
     notify: NotifyConfig = NotifyConfig()
     strategy: StrategyConfig = StrategyConfig()
     backtest: BacktestConfig = BacktestConfig()
+    live: LiveConfig = LiveConfig()
 
 
 class ConfigError(Exception):
