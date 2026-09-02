@@ -32,4 +32,10 @@ data-status: ## 取得済みデータの状態を表示
 universe: ## 現時点の対象銘柄（ユニバース）を表示
 	uv run cryptobot universe show
 
-.PHONY: help setup doctor check fmt data data-status universe
+backtest: ## 戦略を過去データで検証して成績を表示
+	uv run cryptobot backtest run
+
+walkforward: ## ウォークフォワード検証（過学習の検出。時間がかかります）
+	uv run cryptobot backtest walkforward
+
+.PHONY: help setup doctor check fmt data data-status universe backtest walkforward

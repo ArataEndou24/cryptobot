@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated
 
+import numpy as np
 import polars as pl
 import typer
 
@@ -20,8 +21,10 @@ app = typer.Typer(
 )
 data_app = typer.Typer(help="研究用データの取得と確認", no_args_is_help=True)
 universe_app = typer.Typer(help="対象銘柄（ユニバース）の確認", no_args_is_help=True)
+backtest_app = typer.Typer(help="過去データでの検証（バックテスト）", no_args_is_help=True)
 app.add_typer(data_app, name="data")
 app.add_typer(universe_app, name="universe")
+app.add_typer(backtest_app, name="backtest")
 
 ConfigOpt = Annotated[
     Path | None, typer.Option("--config", "-c", help="設定ファイルの場所（通常は省略）")
@@ -164,11 +167,17 @@ def data_status(config: ConfigOpt = None) -> None:
 def universe_show(
     config: ConfigOpt = None,
     as_of: Annotated[
-        str | None, typer.Option("--as-of", help="この日付時点で選ぶ（YYYY-MM-DD、省略時は今）")
+        str | None,
+        typer.Option("--as-of", help="この日付時点で選ぶ（YYYY-MM-DD、省略時はデータの最終時刻）"),
     ] = None,
 ) -> None:
-    """設定に基づいて対象銘柄を選び、表示する。"""
-    from cryptobot.data.universe import latest_bar_time, select_universe
+    """設定に基づいて対象銘柄を選び、表示する。除外した非暗号資産も併せて表示する。"""
+    from cryptobot.data.universe import (
+        compute_daily,
+        excluded_non_crypto,
+        latest_bar_time,
+        select_universe_from_daily,
+    )
 
     s = _settings(config)
     store = _store(s)
@@ -180,7 +189,8 @@ def universe_show(
             typer.echo("まだデータがありません。`make data` で取得してください。")
             raise typer.Exit(code=1)
         when = latest + timedelta(hours=1)
-    df = select_universe(store, when, s.universe)
+    daily = compute_daily(store)
+    df = select_universe_from_daily(daily, when, s.universe)
     if df.is_empty():
         typer.echo("条件を満たす銘柄がありません。データが取得済みか確認してください。")
         raise typer.Exit(code=1)
@@ -192,6 +202,115 @@ def universe_show(
             ).drop("dollar_volume")
         )
     )
+    if s.universe.exclude_non_crypto:
+        ex = excluded_non_crypto(daily, when, s.universe)
+        typer.echo(f"\n非暗号資産として除外した銘柄: {ex.height} 件（週末出来高比が小さい順）")
+        typer.echo(str(ex.head(40)))
+        if ex.height > 40:
+            typer.echo(f"... 他 {ex.height - 40} 件")
+
+
+def _parse_day(text: str) -> datetime:
+    return datetime.fromisoformat(text).replace(tzinfo=UTC)
+
+
+@backtest_app.command("run")
+def backtest_run(
+    config: ConfigOpt = None,
+    start: Annotated[str | None, typer.Option("--start", help="開始日 YYYY-MM-DD")] = None,
+    end: Annotated[str | None, typer.Option("--end", help="終了日 YYYY-MM-DD")] = None,
+) -> None:
+    """設定ファイルの戦略を過去データで検証し、成績を表示する。"""
+    from cryptobot.research.backtest import CostModel, simulate
+    from cryptobot.research.panel import build_panel
+    from cryptobot.research.report import format_report, format_yearly, interpret
+    from cryptobot.strategy.momentum import target_weights
+
+    s = _settings(config)
+    store = _store(s)
+    t_start = _parse_day(start or s.backtest.start)
+    end_text = end or s.backtest.end
+    t_end = _parse_day(end_text) if end_text else _latest_or_exit(store)
+    warmup = max(max(s.strategy.horizons_hours), s.strategy.vol_lookback_hours) + 1
+    typer.echo(f"パネルを構築中（{t_start:%Y-%m-%d} 〜 {t_end:%Y-%m-%d}、助走 {warmup} 時間）...")
+    panel = build_panel(store, t_start, t_end, s.universe, warmup_hours=warmup)
+    typer.echo(f"銘柄 {panel.n_symbols}、足 {panel.n_times:,} 本。目標ウェイトを計算中...")
+    w = target_weights(panel, s.strategy, s.risk)
+    cost = CostModel(s.backtest.fee_bps, s.backtest.slippage_bps)
+    res = simulate(panel, w, cost, s.backtest.initial_equity, start_index=panel.index_of(t_start))
+    typer.echo(format_report(f"検証結果: {s.strategy.name}", res))
+    typer.echo(format_yearly(res))
+    typer.echo("")
+    typer.echo("読み方:")
+    for note in interpret(res):
+        typer.echo(f"  - {note}")
+    no_cost = simulate(panel, w, CostModel(0, 0), 1.0, start_index=panel.index_of(t_start))
+    typer.echo(
+        f"  - 参考: コストをゼロにした場合のシャープレシオは {no_cost.stats()['sharpe']:.2f}"
+        f"（現在 {res.stats()['sharpe']:.2f}）。差が大きいほどコストに弱い戦略です。"
+    )
+
+
+@backtest_app.command("walkforward")
+def backtest_walkforward(
+    config: ConfigOpt = None,
+    start: Annotated[str | None, typer.Option("--start", help="開始日 YYYY-MM-DD")] = None,
+    end: Annotated[str | None, typer.Option("--end", help="終了日 YYYY-MM-DD")] = None,
+    train_days: Annotated[int, typer.Option(help="学習期間の日数")] = 365,
+    test_days: Annotated[int, typer.Option(help="検証期間の日数")] = 90,
+) -> None:
+    """学習期間で最良の設定を選び、直後の検証期間に適用する、を繰り返す（過学習の検出）。"""
+    from cryptobot.research.backtest import CostModel
+    from cryptobot.research.panel import Panel, build_panel
+    from cryptobot.research.report import format_report, interpret
+    from cryptobot.research.walkforward import walk_forward
+    from cryptobot.strategy.momentum import target_weights
+
+    s = _settings(config)
+    store = _store(s)
+    t_start = _parse_day(start or s.backtest.start)
+    end_text = end or s.backtest.end
+    t_end = _parse_day(end_text) if end_text else _latest_or_exit(store)
+    warmup = max(max(s.strategy.horizons_hours), s.strategy.vol_lookback_hours) + 1
+    grid: list[dict[str, object]] = [
+        {"horizons_hours": h, "funding_weight": fw}
+        for h in ([168], [336], [720], [168, 336, 720])
+        for fw in (0.0, 0.5, 1.0)
+    ]
+    typer.echo(f"パネルを構築中（{t_start:%Y-%m-%d} 〜 {t_end:%Y-%m-%d}）...")
+    panel = build_panel(store, t_start, t_end, s.universe, warmup_hours=warmup)
+    typer.echo(f"銘柄 {panel.n_symbols}、足 {panel.n_times:,} 本。設定 {len(grid)} 通りで検証中...")
+
+    def weight_fn(p: Panel, params: dict[str, object]) -> np.ndarray:
+        cfg = s.strategy.model_copy(update=params)
+        return target_weights(p, cfg, s.risk)
+
+    cost = CostModel(s.backtest.fee_bps, s.backtest.slippage_bps)
+    folds, combined = walk_forward(
+        panel, t_start, t_end, grid, weight_fn, cost, train_days, test_days, warmup
+    )
+    typer.echo("区間ごとの結果（学習期間で選んだ設定 → 検証期間の成績）")
+    for f in folds:
+        st = f.test_result.stats()
+        typer.echo(
+            f"  {f.test_start:%Y-%m-%d}〜{f.test_end:%Y-%m-%d}: 設定 {f.chosen} "
+            f"学習シャープ {f.train_sharpe:.2f} → 検証シャープ {st['sharpe']:.2f}、"
+            f"リターン {st['total_return'] * 100:+.1f}%"
+        )
+    typer.echo("")
+    typer.echo(format_report("ウォークフォワード合成成績（検証期間のみ）", combined))
+    for note in interpret(combined):
+        typer.echo(f"  - {note}")
+
+
+def _latest_or_exit(store: DataStore) -> datetime:
+    from cryptobot.data.universe import latest_bar_time
+
+    latest = latest_bar_time(store)
+    if latest is None:
+        typer.echo("まだデータがありません。`make data` で取得してください。")
+        raise typer.Exit(code=1)
+    return latest
 
 
 if __name__ == "__main__":

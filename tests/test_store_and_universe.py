@@ -30,7 +30,7 @@ def test_store_rejects_missing_columns(store: DataStore) -> None:
 
 
 def _cfg(**kw: object) -> UniverseConfig:
-    base = {"top_n": 2, "lookback_days": 2, "min_history_days": 5}
+    base = {"top_n": 2, "lookback_days": 2, "min_history_days": 5, "exclude_non_crypto": False}
     base.update(kw)
     return UniverseConfig.model_validate(base)
 
@@ -88,3 +88,34 @@ def test_universe_requires_tz(store: DataStore) -> None:
 
 def test_universe_empty_store(store: DataStore) -> None:
     assert select_universe(store, datetime(2024, 1, 1, tzinfo=UTC), _cfg()).is_empty()
+
+
+def _random_walk(
+    symbol: str, t0: datetime, days: int, weekend_scale: float, seed: int
+) -> pl.DataFrame:
+    import numpy as np
+
+    rng = np.random.default_rng(seed)
+    hours = days * 24
+    times = [t0 + timedelta(hours=i) for i in range(hours)]
+    weekend = np.array([t.weekday() >= 5 for t in times])
+    r = rng.normal(0, 0.01, hours) * np.where(weekend, weekend_scale, 1.0)
+    close = 100 * np.cumprod(1 + r)
+    qv = np.where(weekend, 1e6 * weekend_scale, 1e6)
+    df = synthetic_klines(symbol, t0, hours)
+    return df.with_columns(pl.Series("close", close), pl.Series("quote_volume", qv))
+
+
+def test_classify_separates_crypto_from_tokenized_assets(store: DataStore, t0: datetime) -> None:
+    from cryptobot.data.universe import classify, compute_daily, select_universe
+
+    store.write_klines("AAAUSDT", _random_walk("AAAUSDT", t0, 70, weekend_scale=1.0, seed=1))
+    store.write_klines("STOCKUSDT", _random_walk("STOCKUSDT", t0, 70, weekend_scale=0.05, seed=2))
+    # 値動きがほぼないステーブルコイン
+    store.write_klines("USDXUSDT", synthetic_klines("USDXUSDT", t0, 70 * 24, quote_volume=5e6))
+    as_of = t0 + timedelta(days=70)
+    cls = classify(compute_daily(store), as_of)
+    verdict = dict(zip(cls["symbol"].to_list(), cls["is_crypto"].to_list(), strict=True))
+    assert verdict == {"AAAUSDT": True, "STOCKUSDT": False, "USDXUSDT": False}
+    u = select_universe(store, as_of, _cfg(exclude_non_crypto=True, top_n=5, lookback_days=30))
+    assert u["symbol"].to_list() == ["AAAUSDT"]

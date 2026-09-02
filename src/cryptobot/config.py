@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 DEFAULT_CONFIG_PATH = Path("config/settings.yaml")
 EXAMPLE_CONFIG_PATH = Path("config/settings.example.yaml")
@@ -55,6 +55,7 @@ class UniverseConfig(_Strict):
     min_history_days: int = Field(default=90, ge=1, le=3650)
     exclude: list[str] = Field(default_factory=list)
     include_only: list[str] = Field(default_factory=list)
+    exclude_non_crypto: bool = True
 
 
 class RiskConfig(_Strict):
@@ -69,12 +70,55 @@ class NotifyConfig(_Strict):
     telegram_enabled: bool = False
 
 
+class StrategyConfig(_Strict):
+    """第 1 世代戦略（クロスセクショナル・モメンタム + ファンディング・キャリー）の設定。"""
+
+    name: Literal["momentum_carry"] = "momentum_carry"
+    horizons_hours: list[int] = Field(default_factory=lambda: [168, 336, 720])
+    vol_lookback_hours: int = Field(default=720, ge=24, le=8760)
+    rebalance_hours: int = Field(default=4, ge=1, le=168)
+    long_fraction: float = Field(default=0.3, ge=0.0, le=0.5)
+    short_fraction: float = Field(default=0.3, ge=0.0, le=0.5)
+    long_exit_fraction: float = Field(default=0.5, ge=0.0, le=0.5)
+    short_exit_fraction: float = Field(default=0.5, ge=0.0, le=0.5)
+    trade_band: float = Field(default=0.03, ge=0.0, le=0.2)
+    funding_weight: float = Field(default=0.5, ge=0.0, le=5.0)
+    funding_lookback_hours: int = Field(default=72, ge=8, le=720)
+
+    @model_validator(mode="after")
+    def _check_exit_after_entry(self) -> StrategyConfig:
+        if self.long_exit_fraction < self.long_fraction:
+            raise ValueError("long_exit_fraction は long_fraction 以上にしてください")
+        if self.short_exit_fraction < self.short_fraction:
+            raise ValueError("short_exit_fraction は short_fraction 以上にしてください")
+        return self
+
+    @field_validator("horizons_hours")
+    @classmethod
+    def _check_horizons(cls, v: list[int]) -> list[int]:
+        if not v or any(h < 1 or h > 8760 for h in v):
+            raise ValueError("horizons_hours は 1〜8760 の整数を 1 つ以上並べてください")
+        return sorted(set(v))
+
+
+class BacktestConfig(_Strict):
+    """検証（バックテスト）の設定。コストは意図的に保守的な既定値にしてある。"""
+
+    start: str = "2022-01-01"
+    end: str | None = None
+    fee_bps: float = Field(default=4.5, ge=0.0, le=100.0)
+    slippage_bps: float = Field(default=5.0, ge=0.0, le=100.0)
+    initial_equity: float = Field(default=200_000.0, gt=0.0)
+
+
 class Settings(_Strict):
     exchange: ExchangeConfig = ExchangeConfig()
     data: DataConfig = DataConfig()
     universe: UniverseConfig = UniverseConfig()
     risk: RiskConfig = RiskConfig()
     notify: NotifyConfig = NotifyConfig()
+    strategy: StrategyConfig = StrategyConfig()
+    backtest: BacktestConfig = BacktestConfig()
 
 
 class ConfigError(Exception):
