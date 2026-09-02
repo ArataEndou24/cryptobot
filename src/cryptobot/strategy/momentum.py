@@ -64,20 +64,26 @@ def rolling_mean(x: np.ndarray, window: int) -> np.ndarray:
 def momentum_scores(panel: Panel, cfg: StrategyConfig) -> tuple[np.ndarray, np.ndarray]:
     """(得点 T×N, 時間あたりボラティリティ T×N)。"""
     close = panel.close
-    logp = np.log(close)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        logp = np.log(close)
     r1 = np.full_like(close, np.nan)
     r1[1:] = logp[1:] - logp[:-1]
     vol = rolling_std(r1, cfg.vol_lookback_hours)
+    vol = np.where(vol > 0, vol, np.nan)  # 値が動かない銘柄は対象外
     score = np.zeros_like(close)
     count = np.zeros_like(close)
-    for h in cfg.horizons_hours:
-        ret_h = np.full_like(close, np.nan)
-        ret_h[h:] = logp[h:] - logp[:-h]
-        adj = ret_h / (vol * np.sqrt(h))
-        ok = ~np.isnan(adj)
-        score += np.where(ok, adj, 0.0)
-        count += ok
-    score = np.where(count > 0, score / np.maximum(count, 1), np.nan)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        for h in cfg.horizons_hours:
+            ret_h = np.full_like(close, np.nan)
+            ret_h[h:] = logp[h:] - logp[:-h]
+            adj = ret_h / (vol * np.sqrt(h))
+            ok = np.isfinite(adj)
+            score += np.where(ok, adj, 0.0)
+            count += ok
+    score = np.where(count > 0, cfg.momentum_weight * score / np.maximum(count, 1), np.nan)
+    if cfg.momentum_weight == 0:
+        # モメンタムを使わない場合も「得点あり」として扱う（順位はファンディングだけで決まる）
+        score = np.where(np.isnan(vol), np.nan, 0.0)
     if cfg.funding_weight > 0:
         # 8 時間ごとのレートを時間平均し、横断的 z スコアにする
         f_mean = rolling_mean(
@@ -104,7 +110,8 @@ def _cross_sectional_z(x: np.ndarray, mask: np.ndarray) -> np.ndarray:
 def target_weights(panel: Panel, cfg: StrategyConfig, risk: RiskConfig) -> np.ndarray:
     score, vol = momentum_scores(panel, cfg)
     T, N = panel.close.shape
-    logp = np.log(panel.close)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        logp = np.log(panel.close)
     r1 = np.full_like(panel.close, np.nan)
     r1[1:] = logp[1:] - logp[:-1]
     W = np.zeros((T, N))

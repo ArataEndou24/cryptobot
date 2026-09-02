@@ -303,6 +303,61 @@ def backtest_walkforward(
         typer.echo(f"  - {note}")
 
 
+COMPARE_VARIANTS: dict[str, dict[str, object]] = {
+    "基準（設定ファイル）": {},
+    "モメンタムのみ": {"funding_weight": 0.0},
+    "ファンディングのみ": {"momentum_weight": 0.0, "funding_weight": 1.0},
+    "長い期間（30〜90日）": {"horizons_hours": [720, 1440, 2160]},
+    "日次リバランス": {"rebalance_hours": 24},
+    "ロングのみ": {"short_fraction": 0.0, "short_exit_fraction": 0.0},
+}
+
+
+@backtest_app.command("compare")
+def backtest_compare(
+    config: ConfigOpt = None,
+    start: Annotated[str | None, typer.Option("--start", help="開始日 YYYY-MM-DD")] = None,
+    end: Annotated[str | None, typer.Option("--end", help="終了日 YYYY-MM-DD")] = None,
+) -> None:
+    """戦略の構成要素を 1 つずつ外した変種を同じ期間で比べ、どこに優位性があるかを見る。"""
+    from cryptobot.research.backtest import CostModel, simulate
+    from cryptobot.research.panel import build_panel
+    from cryptobot.strategy.momentum import target_weights
+
+    s = _settings(config)
+    store = _store(s)
+    t_start = _parse_day(start or s.backtest.start)
+    end_text = end or s.backtest.end
+    t_end = _parse_day(end_text) if end_text else _latest_or_exit(store)
+    warmup = 2160 + 1
+    typer.echo(f"パネルを構築中（{t_start:%Y-%m-%d} 〜 {t_end:%Y-%m-%d}）...")
+    panel = build_panel(store, t_start, t_end, s.universe, warmup_hours=warmup)
+    typer.echo(
+        f"銘柄 {panel.n_symbols}、足 {panel.n_times:,} 本。{len(COMPARE_VARIANTS)} 通りを検証中..."
+    )
+    cost = CostModel(s.backtest.fee_bps, s.backtest.slippage_bps)
+    i0 = panel.index_of(t_start)
+    rows: list[str] = [
+        "  変種                     年率     シャープ  最大DD   回転率   値動き   ファンディング  コスト"  # noqa: E501
+    ]
+    for name, params in COMPARE_VARIANTS.items():
+        cfg = s.strategy.model_copy(update=params)
+        res = simulate(panel, target_weights(panel, cfg, s.risk), cost, start_index=i0)
+        st = res.stats()
+        rows.append(
+            f"  {name:<22} {st['cagr'] * 100:+7.1f}%  {st['sharpe']:6.2f}  "
+            f"{st['max_drawdown'] * 100:+6.1f}%  {st['annual_turnover']:5.0f}倍  "
+            f"{st['annual_gross'] * 100:+6.1f}%  {st['annual_funding'] * 100:+8.1f}%  "
+            f"{st['annual_cost'] * 100:+6.1f}%"
+        )
+        typer.echo(rows[-1])
+    typer.echo("")
+    typer.echo("読み方: 年率・回転率・値動き・ファンディング・コストは全て年率換算。")
+    typer.echo(
+        "  「モメンタムのみ」と「ファンディングのみ」を比べると、どちらの要素が効いているかが分かります。"  # noqa: E501
+    )
+
+
 def _latest_or_exit(store: DataStore) -> datetime:
     from cryptobot.data.universe import latest_bar_time
 

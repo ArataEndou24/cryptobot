@@ -105,8 +105,9 @@ def simulate(
     cost: CostModel,
     initial_equity: float = 1.0,
     start_index: int = 0,
+    end_index: int | None = None,
 ) -> BacktestResult:
-    """weights[t] は t の終値で決めた目標ウェイト。start_index 以降を集計する。"""
+    """weights[t] は t の終値で決めた目標ウェイト。[start_index, end_index) を集計する。"""
     if weights.shape != panel.close.shape:
         raise ValueError("weights の形がパネルと一致しません")
     close = panel.close
@@ -132,7 +133,7 @@ def simulate(
     net = gross + funding + costs
     lev = np.sum(np.abs(w_prev), axis=1)
 
-    sl = slice(start_index, T)
+    sl = slice(start_index, T if end_index is None else min(end_index, T))
     equity = initial_equity * np.cumprod(1.0 + net[sl])
     return BacktestResult(
         times=panel.times[sl],

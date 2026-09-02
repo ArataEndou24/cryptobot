@@ -3,6 +3,9 @@
 過去（学習期間）で最も良かった設定を、その直後（検証期間）にそのまま使う、を繰り返す。
 検証期間だけをつなげた成績が「本当にその時点で得られたはずの成績」に近い。
 学習期間で選んだ設定が検証期間でも通用しないなら、それは過学習の兆候である。
+
+計算量の工夫: 戦略は因果的（時刻 t のウェイトは t までの情報だけで決まる）なので、
+設定ごとに全期間のウェイトを 1 回だけ計算し、各区間はその切り出しで評価する。
 """
 
 from __future__ import annotations
@@ -41,6 +44,7 @@ def walk_forward(
     warmup_hours: int = 0,
 ) -> tuple[list[Fold], BacktestResult]:
     folds: list[Fold] = []
+    weights_by_params: list[np.ndarray] = [weight_fn(panel, p) for p in grid]
     test_start = start + timedelta(days=train_days)
     all_net: list[np.ndarray] = []
     all_times: list[np.ndarray] = []
@@ -50,15 +54,16 @@ def walk_forward(
     while test_start < end:
         test_end = min(test_start + timedelta(days=test_days), end)
         train_start = test_start - timedelta(days=train_days)
-        best: tuple[float, dict[str, object]] | None = None
-        for params in grid:
-            res = _run(panel, train_start, test_start, params, weight_fn, cost, warmup_hours)
+        best: tuple[float, int] | None = None
+        for k in range(len(grid)):
+            res = _run(panel, train_start, test_start, weights_by_params[k], cost)
             s = res.stats()["sharpe"]
             if best is None or s > best[0]:
-                best = (s, params)
+                best = (s, k)
         assert best is not None
-        test_res = _run(panel, test_start, test_end, best[1], weight_fn, cost, warmup_hours)
-        folds.append(Fold(train_start, test_start, test_end, best[1], best[0], test_res))
+        chosen = grid[best[1]]
+        test_res = _run(panel, test_start, test_end, weights_by_params[best[1]], cost)
+        folds.append(Fold(train_start, test_start, test_end, chosen, best[0], test_res))
         all_net.append(test_res.net_returns)
         all_times.append(test_res.times)
         parts["gross"].append(test_res.gross_returns)
@@ -89,14 +94,9 @@ def _run(
     panel: Panel,
     start: datetime,
     end: datetime,
-    params: dict[str, object],
-    weight_fn: WeightFn,
+    weights: np.ndarray,
     cost: CostModel,
-    warmup_hours: int,
 ) -> BacktestResult:
-    i0 = max(0, panel.index_of(start) - warmup_hours)
-    i_start = panel.index_of(start)
-    i_end = panel.index_of(end)
-    sub = panel.slice(i0, i_end)
-    w = weight_fn(sub, params)
-    return simulate(sub, w, cost, start_index=i_start - i0)
+    return simulate(
+        panel, weights, cost, start_index=panel.index_of(start), end_index=panel.index_of(end)
+    )

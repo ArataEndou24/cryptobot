@@ -118,3 +118,29 @@ def test_target_weights_respect_caps_and_no_lookahead() -> None:
 def test_panel_index_of() -> None:
     p = make_panel(np.ones((10, 1)))
     assert p.index_of(datetime(2024, 1, 1, 3, tzinfo=UTC)) == 3
+
+
+def test_walk_forward_runs_and_concatenates_test_periods() -> None:
+    from datetime import timedelta
+
+    from cryptobot.research.walkforward import walk_forward
+
+    rng = np.random.default_rng(3)
+    T, N = 24 * 400, 8
+    close = 100 * np.cumprod(1 + rng.normal(0, 0.01, (T, N)), axis=0)
+    p = make_panel(close)
+    risk = RiskConfig()
+    grid: list[dict[str, object]] = [{"horizons_hours": [24]}, {"horizons_hours": [72]}]
+
+    def weight_fn(panel: Panel, params: dict[str, object]) -> np.ndarray:
+        cfg = StrategyConfig(vol_lookback_hours=120, funding_weight=0.0).model_copy(update=params)
+        return target_weights(panel, cfg, risk)
+
+    start = datetime(2024, 1, 1, tzinfo=UTC)
+    end = start + timedelta(days=400)
+    folds, combined = walk_forward(
+        p, start, end, grid, weight_fn, CostModel(0, 0), train_days=100, test_days=50
+    )
+    assert len(folds) == 6
+    assert combined.net_returns.shape[0] == 300 * 24
+    assert all(f.chosen in grid for f in folds)

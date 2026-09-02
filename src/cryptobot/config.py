@@ -82,6 +82,7 @@ class StrategyConfig(_Strict):
     long_exit_fraction: float = Field(default=0.5, ge=0.0, le=0.5)
     short_exit_fraction: float = Field(default=0.5, ge=0.0, le=0.5)
     trade_band: float = Field(default=0.03, ge=0.0, le=0.2)
+    momentum_weight: float = Field(default=1.0, ge=0.0, le=5.0)
     funding_weight: float = Field(default=0.5, ge=0.0, le=5.0)
     funding_lookback_hours: int = Field(default=72, ge=8, le=720)
 

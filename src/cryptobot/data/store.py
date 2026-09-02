@@ -45,10 +45,7 @@ class DataStore:
     # ---- 書き込み ----
     def write_klines(self, symbol: str, df: pl.DataFrame) -> Path:
         df = _conform(df, KLINE_SCHEMA).unique(subset=["open_time"], keep="last").sort("open_time")
-        path = self.klines_path(symbol)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        df.write_parquet(path, compression="zstd")
-        return path
+        return _atomic_write(df, self.klines_path(symbol))
 
     def write_funding(self, symbol: str, df: pl.DataFrame) -> Path:
         df = (
@@ -56,10 +53,7 @@ class DataStore:
             .unique(subset=["funding_time"], keep="last")
             .sort("funding_time")
         )
-        path = self.funding_path(symbol)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        df.write_parquet(path, compression="zstd")
-        return path
+        return _atomic_write(df, self.funding_path(symbol))
 
     # ---- 読み込み ----
     def symbols(self) -> list[str]:
@@ -109,6 +103,15 @@ class DataStore:
             .sort("symbol")
             .collect()
         )
+
+
+def _atomic_write(df: pl.DataFrame, path: Path) -> Path:
+    """一時ファイルに書いてから置き換える。読み手が書きかけのファイルを見ないため。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".parquet.tmp")
+    df.write_parquet(tmp, compression="zstd")
+    tmp.replace(path)
+    return path
 
 
 def _conform(df: pl.DataFrame, schema: dict[str, pl.DataType]) -> pl.DataFrame:

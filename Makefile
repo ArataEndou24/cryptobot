@@ -35,7 +35,10 @@ universe: ## 現時点の対象銘柄（ユニバース）を表示
 backtest: ## 戦略を過去データで検証して成績を表示
 	uv run cryptobot backtest run
 
-walkforward: ## ウォークフォワード検証（過学習の検出。時間がかかります）
+walkforward: ## ウォークフォワード検証（過学習の検出。数分かかります）
 	uv run cryptobot backtest walkforward
 
-.PHONY: help setup doctor check fmt data data-status universe backtest walkforward
+compare: ## 戦略の構成要素ごとの比較（どこに優位性があるかを見る）
+	uv run cryptobot backtest compare
+
+.PHONY: help setup doctor check fmt data data-status universe backtest walkforward compare
