@@ -273,9 +273,10 @@ def backtest_walkforward(
     t_end = _parse_day(end_text) if end_text else _latest_or_exit(store)
     warmup = max(max(s.strategy.horizons_hours), s.strategy.vol_lookback_hours) + 1
     grid: list[dict[str, object]] = [
-        {"horizons_hours": h, "funding_weight": fw}
-        for h in ([168], [336], [720], [168, 336, 720])
-        for fw in (0.0, 0.5, 1.0)
+        {"horizons_hours": h, "trade_band": band, "rebalance_hours": rb}
+        for h in ([336], [720], [168, 336, 720])
+        for band in (0.03, 0.06)
+        for rb in (4, 24)
     ]
     typer.echo(f"パネルを構築中（{t_start:%Y-%m-%d} 〜 {t_end:%Y-%m-%d}）...")
     panel = build_panel(store, t_start, t_end, s.universe, warmup_hours=warmup)
@@ -305,10 +306,19 @@ def backtest_walkforward(
 
 COMPARE_VARIANTS: dict[str, dict[str, object]] = {
     "基準（設定ファイル）": {},
-    "モメンタムのみ": {"funding_weight": 0.0},
-    "ファンディングのみ": {"momentum_weight": 0.0, "funding_weight": 1.0},
-    "長い期間（30〜90日）": {"horizons_hours": [720, 1440, 2160]},
+    "ファンディングも選定に使う": {"funding_weight": 0.5},
+    "レバレッジを4時間ごと更新": {"leverage_update_hours": 4},
+    "等金額配分": {"weighting": "equal"},
+    "帯を6%に": {"trade_band": 0.06},
     "日次リバランス": {"rebalance_hours": 24},
+    "2週間モメンタムのみ": {"horizons_hours": [336]},
+    "長い期間（30〜90日）": {"horizons_hours": [720, 1440, 2160]},
+    "上下2割ずつ": {
+        "long_fraction": 0.2,
+        "short_fraction": 0.2,
+        "long_exit_fraction": 0.4,
+        "short_exit_fraction": 0.4,
+    },
     "ロングのみ": {"short_fraction": 0.0, "short_exit_fraction": 0.0},
 }
 

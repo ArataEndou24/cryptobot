@@ -11,6 +11,7 @@
    既に持っている銘柄は、順位が「手仕舞い線」まで落ちない限り持ち続ける（入口と出口を非対称にして回転を抑える）。
 4. 各側の中でボラティリティの逆数で配分し、ロング・ショートの金額を等しくする（ドル中立）。
 5. 直近の共分散から推定したポートフォリオのボラティリティが目標に合うようにレバレッジを決める。
+   レバレッジの更新は一定時間ごと（既定 24 時間）に限り、更新のたびに売買が出るのを抑える。
 6. 1 銘柄上限と総建玉上限で切る。
 7. 目標と現在の差が小さい銘柄は売買しない（売買しない帯）。手仕舞いは常に行う。
 リバランス時刻の間は、直前の目標ウェイトを保持する。
@@ -117,6 +118,7 @@ def target_weights(panel: Panel, cfg: StrategyConfig, risk: RiskConfig) -> np.nd
     W = np.zeros((T, N))
     hourly_target = risk.target_annual_vol / np.sqrt(HOURS_PER_YEAR)
     prev = np.zeros(N)
+    lev = 0.0
     for t in range(T):
         if t % cfg.rebalance_hours != 0:
             W[t] = prev
@@ -130,14 +132,15 @@ def target_weights(panel: Panel, cfg: StrategyConfig, risk: RiskConfig) -> np.nd
         longs, shorts = _select_sides(score[t], idx, prev, cfg)
         raw = np.zeros(N)
         if longs.size:
-            inv = 1.0 / vol[t, longs]
+            inv = 1.0 / vol[t, longs] if cfg.weighting == "inverse_vol" else np.ones(longs.size)
             raw[longs] = 0.5 * inv / inv.sum()
         if shorts.size:
-            inv = 1.0 / vol[t, shorts]
+            inv = 1.0 / vol[t, shorts] if cfg.weighting == "inverse_vol" else np.ones(shorts.size)
             raw[shorts] = -0.5 * inv / inv.sum()
         if longs.size == 0 or shorts.size == 0:
             raw *= 2.0  # 片側だけなら総建玉 1 に揃える
-        lev = _vol_target_leverage(r1, t, raw, cfg.vol_lookback_hours, hourly_target)
+        if lev == 0.0 or t % cfg.leverage_update_hours == 0:
+            lev = _vol_target_leverage(r1, t, raw, cfg.vol_lookback_hours, hourly_target)
         w = raw * lev
         w = np.clip(w, -risk.max_position_pct, risk.max_position_pct)
         w = _re_neutralize(w)

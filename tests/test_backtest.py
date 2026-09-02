@@ -144,3 +144,29 @@ def test_walk_forward_runs_and_concatenates_test_periods() -> None:
     assert len(folds) == 6
     assert combined.net_returns.shape[0] == 300 * 24
     assert all(f.chosen in grid for f in folds)
+
+
+def test_leverage_update_interval_and_equal_weighting() -> None:
+    rng = np.random.default_rng(5)
+    T, N = 24 * 60, 12
+    close = 100 * np.cumprod(1 + rng.normal(0, 0.01, (T, N)), axis=0)
+    p = make_panel(close)
+    risk = RiskConfig()
+    base = StrategyConfig(
+        horizons_hours=[48],
+        vol_lookback_hours=120,
+        funding_weight=0.0,
+        trade_band=0.0,
+        weighting="equal",
+    )
+    w_fast = target_weights(p, base.model_copy(update={"leverage_update_hours": 4}), risk)
+    w_slow = target_weights(p, base.model_copy(update={"leverage_update_hours": 24}), risk)
+
+    def gross_changes(w: np.ndarray) -> int:
+        g = np.abs(w).sum(axis=1)
+        return int((np.abs(np.diff(g)) > 1e-12).sum())
+
+    # 等金額配分ならレバレッジ更新か銘柄入れ替えのときだけ総建玉が変わる
+    assert gross_changes(w_slow) <= gross_changes(w_fast)
+    active = w_slow[-1][w_slow[-1] > 0]
+    assert active.size > 0 and np.allclose(active, active[0])

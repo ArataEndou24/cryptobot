@@ -59,7 +59,7 @@ class UniverseConfig(_Strict):
 
 
 class RiskConfig(_Strict):
-    target_annual_vol: float = Field(default=0.50, gt=0.0, le=1.5)
+    target_annual_vol: float = Field(default=0.30, gt=0.0, le=1.5)
     max_gross_leverage: float = Field(default=2.0, gt=0.0, le=5.0)
     max_position_pct: float = Field(default=0.15, gt=0.0, le=1.0)
     max_daily_loss_pct: float = Field(default=0.08, gt=0.0, le=0.5)
@@ -83,8 +83,10 @@ class StrategyConfig(_Strict):
     short_exit_fraction: float = Field(default=0.5, ge=0.0, le=0.5)
     trade_band: float = Field(default=0.03, ge=0.0, le=0.2)
     momentum_weight: float = Field(default=1.0, ge=0.0, le=5.0)
-    funding_weight: float = Field(default=0.5, ge=0.0, le=5.0)
+    funding_weight: float = Field(default=0.0, ge=0.0, le=5.0)
     funding_lookback_hours: int = Field(default=72, ge=8, le=720)
+    weighting: Literal["inverse_vol", "equal"] = "inverse_vol"
+    leverage_update_hours: int = Field(default=24, ge=1, le=720)
 
     @model_validator(mode="after")
     def _check_exit_after_entry(self) -> StrategyConfig:
