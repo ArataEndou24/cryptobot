@@ -1,0 +1,120 @@
+from __future__ import annotations
+
+from datetime import UTC, datetime
+
+import numpy as np
+import pytest
+
+from cryptobot.config import RiskConfig, StrategyConfig
+from cryptobot.research.backtest import CostModel, simulate
+from cryptobot.research.panel import Panel
+from cryptobot.strategy.momentum import rolling_mean, rolling_std, target_weights
+
+
+def make_panel(close: np.ndarray, funding: np.ndarray | None = None) -> Panel:
+    T, N = close.shape
+    times = np.arange(
+        np.datetime64("2024-01-01T00:00", "ms"),
+        np.datetime64("2024-01-01T00:00", "ms") + np.timedelta64(T, "h"),
+        np.timedelta64(1, "h"),
+    ).astype("datetime64[ms]")
+    return Panel(
+        times=times,
+        symbols=[f"S{j}" for j in range(N)],
+        close=close,
+        quote_volume=np.ones_like(close),
+        funding=np.zeros_like(close) if funding is None else funding,
+        member=~np.isnan(close),
+    )
+
+
+def test_zero_weights_is_flat() -> None:
+    close = np.cumprod(1 + np.random.default_rng(0).normal(0, 0.01, (200, 3)), axis=0)
+    p = make_panel(close)
+    res = simulate(p, np.zeros_like(close), CostModel(0, 0))
+    assert np.allclose(res.equity, 1.0)
+    assert res.stats()["annual_turnover"] == 0.0
+
+
+def test_buy_and_hold_one_asset_matches_price_without_costs() -> None:
+    close = np.array([[100.0], [110.0], [99.0], [120.0]])
+    p = make_panel(close)
+    w = np.ones_like(close)
+    res = simulate(p, w, CostModel(0, 0))
+    # 足 0 で決めたウェイトは足 1 から効く: 1.1, 0.9, 1.2121...
+    assert res.equity[-1] == pytest.approx(120.0 / 100.0)
+    assert res.turnover[0] == 1.0 and res.turnover[1] == 0.0
+
+
+def test_costs_charged_on_turnover() -> None:
+    close = np.full((5, 1), 100.0)
+    p = make_panel(close)
+    w = np.array([[1.0], [1.0], [-1.0], [-1.0], [0.0]])
+    res = simulate(p, w, CostModel(fee_bps=10, slippage_bps=0))
+    # 回転: 1 (建て) + 2 (ドテン) + 1 (手仕舞い) = 4、コスト 4 × 0.1% = 0.4%
+    assert res.turnover.sum() == pytest.approx(4.0)
+    assert res.cost_returns.sum() == pytest.approx(-0.004)
+    assert res.equity[-1] < 1.0
+
+
+def test_funding_sign() -> None:
+    close = np.full((4, 1), 100.0)
+    funding = np.array([[0.0], [0.001], [0.0], [0.001]])
+    p = make_panel(close, funding)
+    long_res = simulate(p, np.ones_like(close), CostModel(0, 0))
+    short_res = simulate(p, -np.ones_like(close), CostModel(0, 0))
+    # ロングは支払い、ショートは受け取り
+    assert long_res.funding_returns.sum() == pytest.approx(-0.002)
+    assert short_res.funding_returns.sum() == pytest.approx(+0.002)
+
+
+def test_missing_price_while_holding_warns() -> None:
+    close = np.array([[100.0], [np.nan], [100.0]])
+    p = make_panel(close)
+    res = simulate(p, np.ones_like(close), CostModel(0, 0))
+    assert res.warnings
+
+
+def test_rolling_helpers() -> None:
+    x = np.array([[1.0], [2.0], [3.0], [4.0]])
+    m = rolling_mean(x, 2)
+    assert m[-1, 0] == pytest.approx(3.5)
+    s = rolling_std(x, 4)
+    assert s[-1, 0] == pytest.approx(np.std([1, 2, 3, 4]))
+    assert np.isnan(s[0, 0])
+
+
+def test_target_weights_respect_caps_and_no_lookahead() -> None:
+    rng = np.random.default_rng(1)
+    T, N = 900, 10
+    drift = np.linspace(-0.003, 0.003, N)
+    rets = rng.normal(0, 0.01, (T, N)) + drift
+    close = 100 * np.cumprod(1 + rets, axis=0)
+    p = make_panel(close)
+    scfg = StrategyConfig(
+        horizons_hours=[24, 72],
+        vol_lookback_hours=120,
+        rebalance_hours=4,
+        funding_weight=0.0,
+        trade_band=0.0,
+    )
+    risk = RiskConfig(max_position_pct=0.2, max_gross_leverage=1.5)
+    W = target_weights(p, scfg, risk)
+    assert np.all(np.abs(W) <= 0.2 + 1e-12)
+    assert np.all(np.abs(W).sum(axis=1) <= 1.5 + 1e-9)
+    # ドル中立: ロングとショートの合計はほぼ 0
+    active = np.abs(W).sum(axis=1) > 0
+    assert active.any()
+    assert np.allclose(W[active].sum(axis=1), 0.0, atol=1e-9)
+    # 上昇トレンドの銘柄はロング側、下落トレンドの銘柄はショート側に偏る
+    assert W[-200:, -1].mean() > 0 and W[-200:, 0].mean() < 0
+    # 未来参照なし: 後半の価格を変えても前半のウェイトは変わらない
+    close2 = close.copy()
+    close2[600:] *= rng.uniform(0.5, 1.5, (T - 600, N))
+    W2 = target_weights(make_panel(close2), scfg, risk)
+    assert np.array_equal(W[:600], W2[:600])
+
+
+def test_panel_index_of() -> None:
+    p = make_panel(np.ones((10, 1)))
+    assert p.index_of(datetime(2024, 1, 1, 3, tzinfo=UTC)) == 3

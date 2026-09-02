@@ -7,7 +7,8 @@
 
 ## まず読むもの
 
-- `docs/runbook/01_vps_setup.md` サーバーの準備
+- `docs/runbook/00_mac_setup.md` Mac での準備（推奨）
+- `docs/runbook/01_vps_setup.md` VPS での準備（Mac がない場合）
 - `docs/runbook/02_hyperliquid_wallet.md` ウォレットと取引所の準備
 - `docs/decisions.md` なぜこう設計したかの記録
 - `docs/architecture.md` 全体構成
