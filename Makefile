@@ -41,4 +41,7 @@ walkforward: ## ウォークフォワード検証（過学習の検出。数分�
 compare: ## 戦略の構成要素ごとの比較（どこに優位性があるかを見る）
 	uv run cryptobot backtest compare
 
-.PHONY: help setup doctor check fmt data data-status universe backtest walkforward compare
+exchange-symbols: ## 取引所（Hyperliquid）の上場銘柄一覧を取得して保存
+	uv run cryptobot exchange symbols
+
+.PHONY: help setup doctor check fmt data data-status universe backtest walkforward compare exchange-symbols

@@ -187,5 +187,16 @@ def _candidate_names(daily: pl.DataFrame, cfg: UniverseConfig) -> list[str]:
     names = [s for s in daily["symbol"].unique().to_list() if s.endswith(cfg.quote)]
     if cfg.include_only:
         names = [s for s in names if s in set(cfg.include_only)]
+    if cfg.tradable_only and TRADABLE is not None:
+        names = [s for s in names if s in TRADABLE]
     excluded = set(cfg.exclude)
     return sorted(s for s in names if s not in excluded)
+
+
+# 取引所で取引可能な Binance 銘柄名の集合。set_tradable() で設定する。None なら絞り込みなし。
+TRADABLE: frozenset[str] | None = None
+
+
+def set_tradable(symbols: Iterable[str] | None) -> None:
+    global TRADABLE
+    TRADABLE = None if symbols is None else frozenset(symbols)

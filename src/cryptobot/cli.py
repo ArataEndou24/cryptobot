@@ -22,9 +22,11 @@ app = typer.Typer(
 data_app = typer.Typer(help="研究用データの取得と確認", no_args_is_help=True)
 universe_app = typer.Typer(help="対象銘柄（ユニバース）の確認", no_args_is_help=True)
 backtest_app = typer.Typer(help="過去データでの検証（バックテスト）", no_args_is_help=True)
+exchange_app = typer.Typer(help="取引所（Hyperliquid）の情報", no_args_is_help=True)
 app.add_typer(data_app, name="data")
 app.add_typer(universe_app, name="universe")
 app.add_typer(backtest_app, name="backtest")
+app.add_typer(exchange_app, name="exchange")
 
 ConfigOpt = Annotated[
     Path | None, typer.Option("--config", "-c", help="設定ファイルの場所（通常は省略）")
@@ -40,7 +42,51 @@ def _settings(path: Path | None) -> Settings:
 
 
 def _store(s: Settings) -> DataStore:
+    _load_tradable(s)
     return DataStore(s.data.root, s.data.interval)
+
+
+def _load_tradable(s: Settings) -> None:
+    """取引所の上場一覧をキャッシュから読み、ユニバースの絞り込みに使う。"""
+    from cryptobot.data.universe import set_tradable
+    from cryptobot.exchange.hyperliquid_meta import load_markets, map_symbols
+
+    if not s.universe.tradable_only:
+        set_tradable(None)
+        return
+    markets, fetched_at = load_markets(s.data.root)
+    if not markets:
+        typer.echo(
+            "注意: 取引所の上場一覧が未取得のため、取引できない銘柄も対象に含まれます。"
+            " `make exchange-symbols` で取得してください。",
+            err=True,
+        )
+        set_tradable(None)
+        return
+    store = DataStore(s.data.root, s.data.interval)
+    mapping = map_symbols(store.symbols(), markets, s.universe.quote)
+    set_tradable(mapping.keys())
+    day = fetched_at[:10] if fetched_at else "?"
+    typer.echo(f"取引所で取引可能な銘柄に限定: {len(mapping)} 銘柄（一覧取得 {day}）", err=True)
+
+
+@exchange_app.command("symbols")
+def exchange_symbols(config: ConfigOpt = None) -> None:
+    """Hyperliquid の上場銘柄一覧を取得して保存し、研究データとの対応を表示する。"""
+    from cryptobot.exchange.hyperliquid_meta import fetch_markets, map_symbols, save_markets
+
+    s = _settings(config)
+    markets = fetch_markets("mainnet")
+    path = save_markets(markets, s.data.root, "mainnet")
+    store = DataStore(s.data.root, s.data.interval)
+    mapping = map_symbols(store.symbols(), markets, s.universe.quote)
+    typer.echo(
+        f"Hyperliquid 上場: {len(markets)} 銘柄、研究データと対応がついた銘柄: {len(mapping)}"
+    )
+    typer.echo(f"保存先: {path}")
+    renamed = {b: h for b, h in mapping.items() if h != b.removesuffix(s.universe.quote)}
+    if renamed:
+        typer.echo("名前が異なる対応: " + ", ".join(f"{b}→{h}" for b, h in sorted(renamed.items())))
 
 
 @app.callback()
@@ -306,32 +352,16 @@ def backtest_walkforward(
 
 # 変種は戦略設定の上書き。"risk" キーがあればリスク設定も上書きする。
 COMPARE_VARIANTS: dict[str, dict[str, object]] = {
-    "基準（設定ファイル）": {},
-    "30〜90日": {"horizons_hours": [720, 1440, 2160]},
-    "30〜90日 + 日次": {"horizons_hours": [720, 1440, 2160], "rebalance_hours": 24},
-    "30〜90日 + 日次 + 等金額": {
-        "horizons_hours": [720, 1440, 2160],
-        "rebalance_hours": 24,
-        "weighting": "equal",
-    },
-    "30〜90日 + 日次 + 目標ボラ20%": {
-        "horizons_hours": [720, 1440, 2160],
-        "rebalance_hours": 24,
-        "risk": {"target_annual_vol": 0.20},
-    },
-    "30〜90日 + 上下2割ずつ": {
-        "horizons_hours": [720, 1440, 2160],
-        "long_fraction": 0.2,
-        "short_fraction": 0.2,
-        "long_exit_fraction": 0.4,
-        "short_exit_fraction": 0.4,
-    },
-    "30〜90日 + 帯6%": {"horizons_hours": [720, 1440, 2160], "trade_band": 0.06},
-    "2〜6週間": {"horizons_hours": [336, 720, 1008]},
-    "1〜2か月": {"horizons_hours": [720, 1440]},
-    "2〜6か月": {"horizons_hours": [1440, 2880, 4320]},
-    "30日のみ": {"horizons_hours": [720]},
-    "90日のみ": {"horizons_hours": [2160]},
+    "基準（設定ファイル、30〜90日）": {},
+    "帯を相対 20% に": {"trade_band": 0.20, "trade_band_mode": "relative"},
+    "帯を相対 30% に": {"trade_band": 0.30, "trade_band_mode": "relative"},
+    "目標ボラ 20%": {"risk": {"target_annual_vol": 0.20}},
+    "目標ボラ 40%": {"risk": {"target_annual_vol": 0.40}},
+    "1 銘柄上限 10%": {"risk": {"max_position_pct": 0.10}},
+    "コスト 2 倍（片道 19 bps）": {"cost_multiplier": 2.0},
+    "上位 20 銘柄": {"universe": {"top_n": 20}},
+    "上位 40 銘柄": {"universe": {"top_n": 40}},
+    "上場後 180 日から": {"universe": {"min_history_days": 180}},
 }
 
 
@@ -343,7 +373,7 @@ def backtest_compare(
 ) -> None:
     """戦略の構成要素を 1 つずつ外した変種を同じ期間で比べ、どこに優位性があるかを見る。"""
     from cryptobot.research.backtest import CostModel, simulate
-    from cryptobot.research.panel import build_panel
+    from cryptobot.research.panel import Panel, build_panel
     from cryptobot.strategy.momentum import target_weights
 
     s = _settings(config)
@@ -358,16 +388,34 @@ def backtest_compare(
         f"銘柄 {panel.n_symbols}、足 {panel.n_times:,} 本。{len(COMPARE_VARIANTS)} 通りを検証中..."
     )
     cost = CostModel(s.backtest.fee_bps, s.backtest.slippage_bps)
-    i0 = panel.index_of(t_start)
     rows: list[str] = [
         "  変種                         年率     シャープ  最大DD   回転率   値動き   ファンディング  コスト"  # noqa: E501
     ]
+    panels: dict[str, Panel] = {"": panel}
     for name, params in COMPARE_VARIANTS.items():
-        strategy_params = {k: v for k, v in params.items() if k != "risk"}
+        special = {"risk", "universe", "cost_multiplier"}
+        strategy_params = {k: v for k, v in params.items() if k not in special}
         risk_params = params.get("risk")
         cfg = s.strategy.model_copy(update=strategy_params)
         risk = s.risk.model_copy(update=risk_params) if isinstance(risk_params, dict) else s.risk
-        res = simulate(panel, target_weights(panel, cfg, risk), cost, start_index=i0)
+        uni_params = params.get("universe")
+        key = str(sorted(uni_params.items())) if isinstance(uni_params, dict) else ""
+        if key not in panels:
+            ucfg = s.universe.model_copy(update=uni_params)  # type: ignore[arg-type]
+            panels[key] = build_panel(store, t_start, t_end, ucfg, warmup_hours=warmup)
+        pnl_panel = panels[key]
+        mult = params.get("cost_multiplier")
+        c = (
+            CostModel(cost.fee_bps * float(mult), cost.slippage_bps * float(mult))
+            if isinstance(mult, float | int)
+            else cost
+        )
+        res = simulate(
+            pnl_panel,
+            target_weights(pnl_panel, cfg, risk),
+            c,
+            start_index=pnl_panel.index_of(t_start),
+        )
         st = res.stats()
         rows.append(
             f"  {name:<26} {st['cagr'] * 100:+7.1f}%  {st['sharpe']:6.2f}  "

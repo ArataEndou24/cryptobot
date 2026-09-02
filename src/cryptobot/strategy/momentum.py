@@ -147,7 +147,7 @@ def target_weights(panel: Panel, cfg: StrategyConfig, risk: RiskConfig) -> np.nd
         gross = np.abs(w).sum()
         if gross > risk.max_gross_leverage:
             w *= risk.max_gross_leverage / gross
-        w = _apply_trade_band(w, prev, cfg.trade_band)
+        w = _apply_trade_band(w, prev, cfg.trade_band, cfg.trade_band_mode)
         gross = np.abs(w).sum()
         if gross > risk.max_gross_leverage:  # 帯で残した分を含めても上限は必ず守る
             w *= risk.max_gross_leverage / gross
@@ -181,11 +181,22 @@ def _select_sides(
     return idx[is_long], idx[is_short]
 
 
-def _apply_trade_band(target: np.ndarray, prev: np.ndarray, band: float) -> np.ndarray:
-    """目標との差が帯の内側なら現状維持。手仕舞い（目標 0）は常に実行する。"""
+def _apply_trade_band(
+    target: np.ndarray, prev: np.ndarray, band: float, mode: str = "absolute"
+) -> np.ndarray:
+    """目標との差が帯の内側なら現状維持。手仕舞い（目標 0）は常に実行する。
+
+    absolute: 差が資産の band 倍未満なら維持。
+    relative: 差がポジションの大きさ（目標と現状の大きい方）の band 倍未満なら維持。
+    """
     if band <= 0:
         return target
-    keep = (np.abs(target - prev) < band) & (target != 0)
+    diff = np.abs(target - prev)
+    if mode == "relative":
+        scale = np.maximum(np.abs(target), np.abs(prev))
+        keep = (diff < band * scale) & (target != 0)
+    else:
+        keep = (diff < band) & (target != 0)
     return np.where(keep, prev, target)
 
 

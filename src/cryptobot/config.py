@@ -56,6 +56,7 @@ class UniverseConfig(_Strict):
     exclude: list[str] = Field(default_factory=list)
     include_only: list[str] = Field(default_factory=list)
     exclude_non_crypto: bool = True
+    tradable_only: bool = True
 
 
 class RiskConfig(_Strict):
@@ -74,7 +75,7 @@ class StrategyConfig(_Strict):
     """第 1 世代戦略（クロスセクショナル・モメンタム + ファンディング・キャリー）の設定。"""
 
     name: Literal["momentum_carry"] = "momentum_carry"
-    horizons_hours: list[int] = Field(default_factory=lambda: [168, 336, 720])
+    horizons_hours: list[int] = Field(default_factory=lambda: [720, 1440, 2160])
     vol_lookback_hours: int = Field(default=720, ge=24, le=8760)
     rebalance_hours: int = Field(default=4, ge=1, le=168)
     long_fraction: float = Field(default=0.3, ge=0.0, le=0.5)
@@ -82,6 +83,7 @@ class StrategyConfig(_Strict):
     long_exit_fraction: float = Field(default=0.5, ge=0.0, le=0.5)
     short_exit_fraction: float = Field(default=0.5, ge=0.0, le=0.5)
     trade_band: float = Field(default=0.03, ge=0.0, le=0.2)
+    trade_band_mode: Literal["absolute", "relative"] = "absolute"
     momentum_weight: float = Field(default=1.0, ge=0.0, le=5.0)
     funding_weight: float = Field(default=0.0, ge=0.0, le=5.0)
     funding_lookback_hours: int = Field(default=72, ge=8, le=720)
