@@ -1,0 +1,17 @@
+# 実行環境
+.venv/
+__pycache__/
+*.pyc
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+dist/
+
+# 秘密情報（絶対にコミットしない）
+.env
+config/settings.yaml
+*.key
+*.pem
+
+# データ（サイズが大きい。再取得できる）
+data/
