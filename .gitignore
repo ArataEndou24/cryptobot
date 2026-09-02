@@ -14,4 +14,4 @@ config/settings.yaml
 *.pem
 
 # データ（サイズが大きい。再取得できる）
-data/
+/data/
