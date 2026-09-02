@@ -421,7 +421,7 @@ def sync_symbol(
             fdf = pl.concat([parse_funding_zip(p, symbol) for p in funding_paths], how="vertical")
             store.write_funding(symbol, fdf)
             result.funding_rows = store.read_funding(symbol).height
-    except Exception as e:  # noqa: BLE001 - 1 銘柄の失敗で全体を止めない
+    except Exception as e:  # 1 銘柄の失敗で全体を止めない
         result.error = f"{type(e).__name__}: {e}"
     return result
 
