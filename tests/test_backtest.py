@@ -170,3 +170,20 @@ def test_leverage_update_interval_and_equal_weighting() -> None:
     assert gross_changes(w_slow) <= gross_changes(w_fast)
     active = w_slow[-1][w_slow[-1] > 0]
     assert active.size > 0 and np.allclose(active, active[0])
+
+
+def test_drawdown_scaling_reduces_exposure_after_losses() -> None:
+    from cryptobot.research.backtest import apply_drawdown_scaling
+
+    # 価格が 30% 下がり続けるとき、ロング固定のウェイトは縮められる
+    close = 100 * np.cumprod(np.full((600, 1), 0.998), axis=0)
+    p = make_panel(close)
+    w = np.ones_like(close)
+    scaled = apply_drawdown_scaling(p, w, CostModel(0, 0), [[0.15, 0.5], [0.25, 0.25]])
+    assert scaled[0, 0] == 1.0
+    assert scaled[-1, 0] == 0.25
+    assert np.all(np.diff(scaled[:, 0]) <= 0)
+    res_plain = simulate(p, w, CostModel(0, 0))
+    res_scaled = simulate(p, w, CostModel(0, 0), drawdown_scaling=[[0.15, 0.5], [0.25, 0.25]])
+    assert res_scaled.stats()["max_drawdown"] > res_plain.stats()["max_drawdown"]
+    assert simulate(p, w, CostModel(0, 0), drawdown_scaling=[]).equity[-1] == res_plain.equity[-1]

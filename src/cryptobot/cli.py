@@ -283,14 +283,28 @@ def backtest_run(
     typer.echo(f"銘柄 {panel.n_symbols}、足 {panel.n_times:,} 本。目標ウェイトを計算中...")
     w = target_weights(panel, s.strategy, s.risk)
     cost = CostModel(s.backtest.fee_bps, s.backtest.slippage_bps)
-    res = simulate(panel, w, cost, s.backtest.initial_equity, start_index=panel.index_of(t_start))
+    res = simulate(
+        panel,
+        w,
+        cost,
+        s.backtest.initial_equity,
+        start_index=panel.index_of(t_start),
+        drawdown_scaling=s.risk.drawdown_scaling,
+    )
     typer.echo(format_report(f"検証結果: {s.strategy.name}", res))
     typer.echo(format_yearly(res))
     typer.echo("")
     typer.echo("読み方:")
     for note in interpret(res):
         typer.echo(f"  - {note}")
-    no_cost = simulate(panel, w, CostModel(0, 0), 1.0, start_index=panel.index_of(t_start))
+    no_cost = simulate(
+        panel,
+        w,
+        CostModel(0, 0),
+        1.0,
+        start_index=panel.index_of(t_start),
+        drawdown_scaling=s.risk.drawdown_scaling,
+    )
     typer.echo(
         f"  - 参考: コストをゼロにした場合のシャープレシオは {no_cost.stats()['sharpe']:.2f}"
         f"（現在 {res.stats()['sharpe']:.2f}）。差が大きいほどコストに弱い戦略です。"
@@ -334,7 +348,16 @@ def backtest_walkforward(
 
     cost = CostModel(s.backtest.fee_bps, s.backtest.slippage_bps)
     folds, combined = walk_forward(
-        panel, t_start, t_end, grid, weight_fn, cost, train_days, test_days, warmup
+        panel,
+        t_start,
+        t_end,
+        grid,
+        weight_fn,
+        cost,
+        train_days,
+        test_days,
+        warmup,
+        drawdown_scaling=s.risk.drawdown_scaling,
     )
     typer.echo("区間ごとの結果（学習期間で選んだ設定 → 検証期間の成績）")
     for f in folds:
@@ -352,16 +375,19 @@ def backtest_walkforward(
 
 # 変種は戦略設定の上書き。"risk" キーがあればリスク設定も上書きする。
 COMPARE_VARIANTS: dict[str, dict[str, object]] = {
-    "基準（設定ファイル、30〜90日）": {},
-    "帯を相対 20% に": {"trade_band": 0.20, "trade_band_mode": "relative"},
-    "帯を相対 30% に": {"trade_band": 0.30, "trade_band_mode": "relative"},
-    "目標ボラ 20%": {"risk": {"target_annual_vol": 0.20}},
-    "目標ボラ 40%": {"risk": {"target_annual_vol": 0.40}},
-    "1 銘柄上限 10%": {"risk": {"max_position_pct": 0.10}},
+    "基準（DD縮小あり 15%/25%）": {},
+    "DD縮小なし": {"risk": {"drawdown_scaling": []}},
+    "DD縮小 10%/20%": {"risk": {"drawdown_scaling": [[0.10, 0.5], [0.20, 0.25]]}},
+    "DD縮小 20%/30%": {"risk": {"drawdown_scaling": [[0.20, 0.5], [0.30, 0.25]]}},
+    "目標ボラ 25%": {"risk": {"target_annual_vol": 0.25}},
+    "目標ボラ 25% + DD縮小なし": {"risk": {"target_annual_vol": 0.25, "drawdown_scaling": []}},
+    "2 週間（ウォークフォワードの選好）": {"horizons_hours": [336], "weighting": "equal"},
+    "2 週間 + DD縮小なし": {
+        "horizons_hours": [336],
+        "weighting": "equal",
+        "risk": {"drawdown_scaling": []},
+    },
     "コスト 2 倍（片道 19 bps）": {"cost_multiplier": 2.0},
-    "上位 20 銘柄": {"universe": {"top_n": 20}},
-    "上位 40 銘柄": {"universe": {"top_n": 40}},
-    "上場後 180 日から": {"universe": {"min_history_days": 180}},
 }
 
 

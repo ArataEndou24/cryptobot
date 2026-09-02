@@ -99,6 +99,49 @@ def _daily_returns(times: np.ndarray, r: np.ndarray) -> np.ndarray:
     return df.group_by("d").agg(((pl.col("r") + 1.0).product() - 1.0).alias("r"))["r"].to_numpy()
 
 
+def apply_drawdown_scaling(
+    panel: Panel,
+    weights: np.ndarray,
+    cost: CostModel,
+    scaling: list[list[float]],
+    start_index: int = 0,
+) -> np.ndarray:
+    """ドローダウンに応じて目標ウェイトを縮める。経路依存なので足ごとに資産を追う。
+
+    倍率は「その時点のドローダウン」で決まる（回復すれば元に戻る）。
+    start_index より前は縮小しない（助走期間）。
+    """
+    if not scaling:
+        return weights
+    close = panel.close
+    T = close.shape[0]
+    ret = np.full_like(close, np.nan)
+    ret[1:] = close[1:] / close[:-1] - 1.0
+    ret = np.nan_to_num(ret, nan=0.0)
+    out: np.ndarray = np.nan_to_num(weights, nan=0.0).copy()
+    equity = 1.0
+    peak = 1.0
+    w_prev = np.zeros(close.shape[1])
+    rate = cost.one_way_rate
+    thresholds = [(float(a), float(b)) for a, b in scaling]
+    for t in range(T):
+        pnl = float(w_prev @ ret[t]) - float(w_prev @ panel.funding[t])
+        equity *= 1.0 + pnl
+        peak = max(peak, equity)
+        dd = 1.0 - equity / peak
+        scale = 1.0
+        if t >= start_index:
+            for thr, mult in thresholds:
+                if dd >= thr:
+                    scale = mult
+        w_new = out[t] * scale
+        turnover = float(np.abs(w_new - w_prev).sum())
+        equity *= 1.0 - turnover * rate
+        out[t] = w_new
+        w_prev = w_new
+    return out
+
+
 def simulate(
     panel: Panel,
     weights: np.ndarray,
@@ -106,10 +149,13 @@ def simulate(
     initial_equity: float = 1.0,
     start_index: int = 0,
     end_index: int | None = None,
+    drawdown_scaling: list[list[float]] | None = None,
 ) -> BacktestResult:
     """weights[t] は t の終値で決めた目標ウェイト。[start_index, end_index) を集計する。"""
     if weights.shape != panel.close.shape:
         raise ValueError("weights の形がパネルと一致しません")
+    if drawdown_scaling:
+        weights = apply_drawdown_scaling(panel, weights, cost, drawdown_scaling, start_index)
     close = panel.close
     T = close.shape[0]
     ret = np.full_like(close, np.nan)

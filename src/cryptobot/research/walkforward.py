@@ -42,6 +42,7 @@ def walk_forward(
     train_days: int = 365,
     test_days: int = 90,
     warmup_hours: int = 0,
+    drawdown_scaling: list[list[float]] | None = None,
 ) -> tuple[list[Fold], BacktestResult]:
     folds: list[Fold] = []
     weights_by_params: list[np.ndarray] = [weight_fn(panel, p) for p in grid]
@@ -56,13 +57,15 @@ def walk_forward(
         train_start = test_start - timedelta(days=train_days)
         best: tuple[float, int] | None = None
         for k in range(len(grid)):
-            res = _run(panel, train_start, test_start, weights_by_params[k], cost)
+            res = _run(panel, train_start, test_start, weights_by_params[k], cost, drawdown_scaling)
             s = res.stats()["sharpe"]
             if best is None or s > best[0]:
                 best = (s, k)
         assert best is not None
         chosen = grid[best[1]]
-        test_res = _run(panel, test_start, test_end, weights_by_params[best[1]], cost)
+        test_res = _run(
+            panel, test_start, test_end, weights_by_params[best[1]], cost, drawdown_scaling
+        )
         folds.append(Fold(train_start, test_start, test_end, chosen, best[0], test_res))
         all_net.append(test_res.net_returns)
         all_times.append(test_res.times)
@@ -96,7 +99,13 @@ def _run(
     end: datetime,
     weights: np.ndarray,
     cost: CostModel,
+    drawdown_scaling: list[list[float]] | None = None,
 ) -> BacktestResult:
     return simulate(
-        panel, weights, cost, start_index=panel.index_of(start), end_index=panel.index_of(end)
+        panel,
+        weights,
+        cost,
+        start_index=panel.index_of(start),
+        end_index=panel.index_of(end),
+        drawdown_scaling=drawdown_scaling,
     )
