@@ -271,12 +271,12 @@ def backtest_walkforward(
     t_start = _parse_day(start or s.backtest.start)
     end_text = end or s.backtest.end
     t_end = _parse_day(end_text) if end_text else _latest_or_exit(store)
-    warmup = max(max(s.strategy.horizons_hours), s.strategy.vol_lookback_hours) + 1
+    warmup = 2160 + 1
     grid: list[dict[str, object]] = [
-        {"horizons_hours": h, "trade_band": band, "rebalance_hours": rb}
-        for h in ([336], [720], [168, 336, 720])
-        for band in (0.03, 0.06)
+        {"horizons_hours": h, "rebalance_hours": rb, "weighting": wt}
+        for h in ([336], [720, 1440, 2160], [336, 720, 1440])
         for rb in (4, 24)
+        for wt in ("inverse_vol", "equal")
     ]
     typer.echo(f"パネルを構築中（{t_start:%Y-%m-%d} 〜 {t_end:%Y-%m-%d}）...")
     panel = build_panel(store, t_start, t_end, s.universe, warmup_hours=warmup)
@@ -304,22 +304,34 @@ def backtest_walkforward(
         typer.echo(f"  - {note}")
 
 
+# 変種は戦略設定の上書き。"risk" キーがあればリスク設定も上書きする。
 COMPARE_VARIANTS: dict[str, dict[str, object]] = {
     "基準（設定ファイル）": {},
-    "ファンディングも選定に使う": {"funding_weight": 0.5},
-    "レバレッジを4時間ごと更新": {"leverage_update_hours": 4},
-    "等金額配分": {"weighting": "equal"},
-    "帯を6%に": {"trade_band": 0.06},
-    "日次リバランス": {"rebalance_hours": 24},
-    "2週間モメンタムのみ": {"horizons_hours": [336]},
-    "長い期間（30〜90日）": {"horizons_hours": [720, 1440, 2160]},
-    "上下2割ずつ": {
+    "30〜90日": {"horizons_hours": [720, 1440, 2160]},
+    "30〜90日 + 日次": {"horizons_hours": [720, 1440, 2160], "rebalance_hours": 24},
+    "30〜90日 + 日次 + 等金額": {
+        "horizons_hours": [720, 1440, 2160],
+        "rebalance_hours": 24,
+        "weighting": "equal",
+    },
+    "30〜90日 + 日次 + 目標ボラ20%": {
+        "horizons_hours": [720, 1440, 2160],
+        "rebalance_hours": 24,
+        "risk": {"target_annual_vol": 0.20},
+    },
+    "30〜90日 + 上下2割ずつ": {
+        "horizons_hours": [720, 1440, 2160],
         "long_fraction": 0.2,
         "short_fraction": 0.2,
         "long_exit_fraction": 0.4,
         "short_exit_fraction": 0.4,
     },
-    "ロングのみ": {"short_fraction": 0.0, "short_exit_fraction": 0.0},
+    "30〜90日 + 帯6%": {"horizons_hours": [720, 1440, 2160], "trade_band": 0.06},
+    "2〜6週間": {"horizons_hours": [336, 720, 1008]},
+    "1〜2か月": {"horizons_hours": [720, 1440]},
+    "2〜6か月": {"horizons_hours": [1440, 2880, 4320]},
+    "30日のみ": {"horizons_hours": [720]},
+    "90日のみ": {"horizons_hours": [2160]},
 }
 
 
@@ -348,14 +360,17 @@ def backtest_compare(
     cost = CostModel(s.backtest.fee_bps, s.backtest.slippage_bps)
     i0 = panel.index_of(t_start)
     rows: list[str] = [
-        "  変種                     年率     シャープ  最大DD   回転率   値動き   ファンディング  コスト"  # noqa: E501
+        "  変種                         年率     シャープ  最大DD   回転率   値動き   ファンディング  コスト"  # noqa: E501
     ]
     for name, params in COMPARE_VARIANTS.items():
-        cfg = s.strategy.model_copy(update=params)
-        res = simulate(panel, target_weights(panel, cfg, s.risk), cost, start_index=i0)
+        strategy_params = {k: v for k, v in params.items() if k != "risk"}
+        risk_params = params.get("risk")
+        cfg = s.strategy.model_copy(update=strategy_params)
+        risk = s.risk.model_copy(update=risk_params) if isinstance(risk_params, dict) else s.risk
+        res = simulate(panel, target_weights(panel, cfg, risk), cost, start_index=i0)
         st = res.stats()
         rows.append(
-            f"  {name:<22} {st['cagr'] * 100:+7.1f}%  {st['sharpe']:6.2f}  "
+            f"  {name:<26} {st['cagr'] * 100:+7.1f}%  {st['sharpe']:6.2f}  "
             f"{st['max_drawdown'] * 100:+6.1f}%  {st['annual_turnover']:5.0f}倍  "
             f"{st['annual_gross'] * 100:+6.1f}%  {st['annual_funding'] * 100:+8.1f}%  "
             f"{st['annual_cost'] * 100:+6.1f}%"
@@ -363,9 +378,7 @@ def backtest_compare(
         typer.echo(rows[-1])
     typer.echo("")
     typer.echo("読み方: 年率・回転率・値動き・ファンディング・コストは全て年率換算。")
-    typer.echo(
-        "  「モメンタムのみ」と「ファンディングのみ」を比べると、どちらの要素が効いているかが分かります。"  # noqa: E501
-    )
+    typer.echo("  基準との差が、その要素を変えた効果です。")
 
 
 def _latest_or_exit(store: DataStore) -> datetime:
