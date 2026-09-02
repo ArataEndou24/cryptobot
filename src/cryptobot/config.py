@@ -125,7 +125,7 @@ class BacktestConfig(_Strict):
     end: str | None = None
     fee_bps: float = Field(default=4.5, ge=0.0, le=100.0)
     slippage_bps: float = Field(default=5.0, ge=0.0, le=100.0)
-    initial_equity: float = Field(default=1_300.0, gt=0.0)
+    initial_equity: float = Field(default=1_000.0, gt=0.0)
 
 
 class LiveConfig(_Strict):

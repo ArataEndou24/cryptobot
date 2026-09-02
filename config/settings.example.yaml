@@ -110,8 +110,8 @@ backtest:
   fee_bps: 4.5
   # 片道の滑り（指値が刺さらず不利な価格で約定する分）。
   slippage_bps: 5.0
-  # 初期資金（USD）。20 万円 ≒ 1,300 USD。口座残高が取れないときの `make plan` にも使われる。
-  initial_equity: 1300
+  # 初期資金（USD）。運用では口座残高を取引所から読むので、検証と `make plan` の表示にだけ使われる。
+  initial_equity: 1000
 
 live:
   # ===== 運用（テストネット / 本番） =====
