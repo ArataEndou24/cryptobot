@@ -375,19 +375,18 @@ def backtest_walkforward(
 
 # 変種は戦略設定の上書き。"risk" キーがあればリスク設定も上書きする。
 COMPARE_VARIANTS: dict[str, dict[str, object]] = {
-    "基準（DD縮小あり 15%/25%）": {},
-    "DD縮小なし": {"risk": {"drawdown_scaling": []}},
-    "DD縮小 10%/20%": {"risk": {"drawdown_scaling": [[0.10, 0.5], [0.20, 0.25]]}},
-    "DD縮小 20%/30%": {"risk": {"drawdown_scaling": [[0.20, 0.5], [0.30, 0.25]]}},
-    "目標ボラ 25%": {"risk": {"target_annual_vol": 0.25}},
-    "目標ボラ 25% + DD縮小なし": {"risk": {"target_annual_vol": 0.25, "drawdown_scaling": []}},
-    "2 週間（ウォークフォワードの選好）": {"horizons_hours": [336], "weighting": "equal"},
-    "2 週間 + DD縮小なし": {
-        "horizons_hours": [336],
+    "基準（30〜90日、逆ボラ）": {},
+    "2 週間、等金額": {"horizons_hours": [336], "weighting": "equal"},
+    "2 週間、逆ボラ": {"horizons_hours": [336]},
+    "2 週間〜90 日の 4 期間、逆ボラ": {"horizons_hours": [336, 720, 1440, 2160]},
+    "2 週間〜90 日の 4 期間、等金額": {
+        "horizons_hours": [336, 720, 1440, 2160],
         "weighting": "equal",
-        "risk": {"drawdown_scaling": []},
     },
-    "コスト 2 倍（片道 19 bps）": {"cost_multiplier": 2.0},
+    "2 週間〜60 日、等金額": {"horizons_hours": [336, 720, 1440], "weighting": "equal"},
+    "30〜90 日、等金額": {"weighting": "equal"},
+    "DD縮小 15%/25%": {"risk": {"drawdown_scaling": [[0.15, 0.5], [0.25, 0.25]]}},
+    "DD縮小 25%/35%": {"risk": {"drawdown_scaling": [[0.25, 0.5], [0.35, 0.25]]}},
 }
 
 
@@ -441,6 +440,7 @@ def backtest_compare(
             target_weights(pnl_panel, cfg, risk),
             c,
             start_index=pnl_panel.index_of(t_start),
+            drawdown_scaling=risk.drawdown_scaling,
         )
         st = res.stats()
         rows.append(

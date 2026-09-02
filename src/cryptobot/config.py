@@ -66,7 +66,7 @@ class RiskConfig(_Strict):
     max_daily_loss_pct: float = Field(default=0.08, gt=0.0, le=0.5)
     max_drawdown_pct: float = Field(default=0.40, gt=0.0, le=0.5)
     # ドローダウンに応じた建玉の縮小。[[しきい値, 倍率], ...]。例: 15% で半分、25% で 4 分の 1。
-    drawdown_scaling: list[list[float]] = Field(default_factory=lambda: [[0.15, 0.5], [0.25, 0.25]])
+    drawdown_scaling: list[list[float]] = Field(default_factory=list)
 
     @field_validator("drawdown_scaling")
     @classmethod
